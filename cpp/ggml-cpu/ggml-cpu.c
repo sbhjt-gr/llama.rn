@@ -683,22 +683,14 @@ bool lm_ggml_is_numa(void) {
 }
 
 #if defined(__ARM_ARCH)
-
-#if defined(__linux__) && defined(__aarch64__)
-#include <sys/auxv.h>
-#endif
-
-static void lm_ggml_init_arm_arch_features(void) {
 #if defined(__aarch64__) && defined(__ARM_FEATURE_SVE)
-#if defined(__linux__)
-    lm_ggml_arm_arch_features.sve_cnt = PR_SVE_VL_LEN_MASK & prctl(PR_SVE_GET_VL);
-#else
-    // TODO: add support of SVE for non-linux systems
-#error "TODO: SVE is not supported on this platform. To use SVE, sve_cnt needs to be initialized here."
-#endif
-#endif
+#include <arm_sve.h>
+static void lm_ggml_init_arm_arch_features(void) {
+    lm_ggml_arm_arch_features.sve_cnt = svcntb();
 }
-
+#else
+static void lm_ggml_init_arm_arch_features(void) {}
+#endif
 #endif // __ARM_ARCH
 
 struct lm_ggml_tensor * lm_ggml_new_i32(struct lm_ggml_context * ctx, int32_t value) {
@@ -1927,6 +1919,10 @@ static void lm_ggml_compute_forward(struct lm_ggml_compute_params * params, stru
             {
                 lm_ggml_compute_forward_argsort(params, tensor);
             } break;
+        case LM_GGML_OP_TOP_K:
+            {
+                lm_ggml_compute_forward_top_k(params, tensor);
+            } break;
         case LM_GGML_OP_LEAKY_RELU:
             {
                 lm_ggml_compute_forward_leaky_relu(params, tensor);
@@ -2311,6 +2307,7 @@ static int lm_ggml_get_n_tasks(struct lm_ggml_tensor * node, int n_threads) {
         case LM_GGML_OP_ARANGE:
         case LM_GGML_OP_TIMESTEP_EMBEDDING:
         case LM_GGML_OP_ARGSORT:
+        case LM_GGML_OP_TOP_K:
         case LM_GGML_OP_FLASH_ATTN_EXT:
         case LM_GGML_OP_FLASH_ATTN_BACK:
         case LM_GGML_OP_SSM_CONV:
@@ -2833,6 +2830,10 @@ struct lm_ggml_cplan lm_ggml_graph_plan(
 
                         cur += sizeof(lm_ggml_fp16_t)*ne00*ne01*ne02*ne03;
                         cur += sizeof(lm_ggml_fp16_t)*ne10*ne11*ne12;
+                    } break;
+                case LM_GGML_OP_TOP_K:
+                    {
+                        cur += sizeof(int32_t)*node->src[0]->ne[0]*n_tasks;
                     } break;
                 case LM_GGML_OP_FLASH_ATTN_EXT:
                     {
