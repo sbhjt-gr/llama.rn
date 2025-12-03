@@ -71,6 +71,9 @@ void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && attn_scale) {
         const int64_t n_tokens = ubatch->n_tokens;
 
+        LM_GGML_ASSERT(f_attn_temp_scale != 0.0f);
+        LM_GGML_ASSERT(n_attn_temp_floor_scale != 0);
+
         std::vector<float> attn_scale_data(n_tokens, 0.0f);
         for (int i = 0; i < n_tokens; ++i) {
             const float pos = ubatch->pos[i];
@@ -810,9 +813,6 @@ lm_ggml_tensor * llm_graph_context::build_ffn(
             LM_GGML_ABORT("fatal error");
     }
 
-    //expand here so that we can fuse ffn gate
-    lm_ggml_build_forward_expand(gf, cur);
-
     if (gate && type_gate == LLM_FFN_PAR) {
         cur = lm_ggml_mul(ctx0, cur, tmp);
         cb(cur, "ffn_gate_par", il);
@@ -961,14 +961,14 @@ lm_ggml_tensor * llm_graph_context::build_moe_ffn(
         // organize experts into n_expert_groups
         lm_ggml_tensor * selection_groups = lm_ggml_reshape_3d(ctx0, selection_probs, n_exp_per_group, hparams.n_expert_groups, n_tokens); // [n_exp_per_group, n_expert_groups, n_tokens]
 
-        lm_ggml_tensor * group_scores = lm_ggml_top_k(ctx0, selection_groups, 2); // [2, n_expert_groups, n_tokens]
+        lm_ggml_tensor * group_scores = lm_ggml_argsort_top_k(ctx0, selection_groups, 2); // [2, n_expert_groups, n_tokens]
         group_scores = lm_ggml_get_rows(ctx0, lm_ggml_reshape_4d(ctx0, selection_groups, 1, selection_groups->ne[0], selection_groups->ne[1], selection_groups->ne[2]), group_scores); // [1, 2, n_expert_groups, n_tokens]
 
         // get top n_group_used expert groups
         group_scores = lm_ggml_sum_rows(ctx0, lm_ggml_reshape_3d(ctx0, group_scores, group_scores->ne[1], group_scores->ne[2], group_scores->ne[3])); // [1, n_expert_groups, n_tokens]
         group_scores = lm_ggml_reshape_2d(ctx0, group_scores, group_scores->ne[1], group_scores->ne[2]); // [n_expert_groups, n_tokens]
 
-        lm_ggml_tensor * expert_groups = lm_ggml_top_k(ctx0, group_scores, hparams.n_group_used); // [n_group_used, n_tokens]
+        lm_ggml_tensor * expert_groups = lm_ggml_argsort_top_k(ctx0, group_scores, hparams.n_group_used); // [n_group_used, n_tokens]
         cb(expert_groups, "ffn_moe_group_topk", il);
 
         // mask out the other groups
@@ -979,7 +979,7 @@ lm_ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     // select experts
-    lm_ggml_tensor * selected_experts = lm_ggml_top_k(ctx0, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
+    lm_ggml_tensor * selected_experts = lm_ggml_argsort_top_k(ctx0, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
     cb(selected_experts->src[0], "ffn_moe_argsort", il);
     cb(selected_experts, "ffn_moe_topk", il);
 
@@ -1092,9 +1092,6 @@ lm_ggml_tensor * llm_graph_context::build_moe_ffn(
         default:
             LM_GGML_ABORT("fatal error");
     }
-
-    //expand here so that we can fuse ffn gate
-    lm_ggml_build_forward_expand(gf, cur);
 
     experts = build_lora_mm_id(down_exps, cur, selected_experts); // [n_embd, n_expert_used, n_tokens]
     cb(experts, "ffn_moe_down", il);
